@@ -47,6 +47,8 @@ jobs:
           REFRESH_FROM: "2026-10-01"
           FULL_START: "2026-03-01"
           METABASE_QUESTION_ID: "6898"
+          RUN_MODE: card
+          CHUNK_DAYS: "10"
           SHEET_TAB: Sheet1
           DATE_COLUMN: "Created Date IST"
           METABASE_URL: ${{ secrets.METABASE_URL }}
