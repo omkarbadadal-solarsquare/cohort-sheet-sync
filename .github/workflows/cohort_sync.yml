@@ -1,0 +1,54 @@
+name: Cohort Data Sync
+
+on:
+  # Daily at 07:00 IST (01:30 UTC). Scheduled runs refresh only Oct -> live.
+  schedule:
+    - cron: "30 1 * * *"
+
+  # Manual run: pick full (Mar -> live, default) or recent (Oct -> live).
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "full = refresh Mar -> live | recent = refresh Oct -> live"
+        type: choice
+        options:
+          - full
+          - recent
+        default: full
+
+# Never let two syncs write to the sheet at the same time.
+concurrency:
+  group: cohort-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run sync
+        run: python sync_to_sheet.py
+        env:
+          # schedule -> recent, manual -> whatever is chosen (default full)
+          MODE: ${{ github.event_name == 'schedule' && 'recent' || inputs.mode }}
+          REFRESH_FROM: "2026-10-01"
+          FULL_START: "2026-03-01"
+          METABASE_QUESTION_ID: "6898"
+          SHEET_TAB: Sheet1
+          DATE_COLUMN: "Created Date IST"
+          METABASE_URL: ${{ secrets.METABASE_URL }}
+          METABASE_API_KEY: ${{ secrets.METABASE_API_KEY }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
