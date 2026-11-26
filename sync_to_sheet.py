@@ -46,6 +46,10 @@ REFRESH_FROM = date.fromisoformat(os.environ.get("REFRESH_FROM", "2026-10-01"))
 # 0 = one query per month. Set e.g. 15 to split each month into 15-day chunks.
 CHUNK_DAYS = int(os.environ.get("CHUNK_DAYS", "0"))
 
+# card  = run the saved question with start_date/end_date variables (default)
+# adhoc = send the question's SQL directly (API key needs native-query permission)
+RUN_MODE = os.environ.get("RUN_MODE", "card").strip().lower()
+
 WRITE_BATCH_ROWS = 5000
 METABASE_TIMEOUT_SEC = 1800
 METABASE_RETRIES = 3
@@ -123,18 +127,39 @@ def load_card():
 
 
 def run_query(database_id, sql):
+    """RUN_MODE=adhoc: send SQL directly (key needs native-query permission)."""
     payload = {
         "database": database_id,
         "type": "native",
         "native": {"query": sql},
     }
+    return _post_json("/api/dataset/json", {"query": json.dumps(payload)})
+
+
+def run_card(start, end):
+    """RUN_MODE=card: run the saved question with start_date / end_date variables."""
+    params = [
+        {
+            "type": "date/single",
+            "target": ["variable", ["template-tag", name]],
+            "value": str(value),
+        }
+        for name, value in (("start_date", start), ("end_date", end))
+    ]
+    return _post_json(
+        f"/api/card/{METABASE_QUESTION_ID}/query/json",
+        {"parameters": json.dumps(params)},
+    )
+
+
+def _post_json(path, form):
     last_err = None
     for attempt in range(1, METABASE_RETRIES + 1):
         try:
             r = requests.post(
-                f"{METABASE_URL}/api/dataset/json",
+                f"{METABASE_URL}{path}",
                 headers={"x-api-key": METABASE_API_KEY},
-                data={"query": json.dumps(payload)},
+                data=form,
                 timeout=METABASE_TIMEOUT_SEC,
             )
             r.raise_for_status()
@@ -203,6 +228,7 @@ def write_block(ws, start_row, rows, ncols):
                 log(f"  sheet write retry {attempt}: {str(e)[:150]}")
                 time.sleep(20 * attempt)
         log(f"  wrote rows {r0}-{r0 + len(part) - 1}")
+        time.sleep(1.2)  # stay under the Sheets write quota (60 requests/min)
 
 
 def serial_of(v):
@@ -276,8 +302,10 @@ def main():
         sys.exit(f"MODE must be 'full' or 'recent', got '{MODE}'")
 
     today = datetime.now(IST).date()
-    database_id, base_sql = load_card()
-    log(f"Loaded question {METABASE_QUESTION_ID} (database {database_id})")
+    database_id, base_sql = None, None
+    if RUN_MODE == "adhoc":
+        database_id, base_sql = load_card()
+        log(f"Loaded question {METABASE_QUESTION_ID} (database {database_id})")
 
     range_start = FULL_START if MODE == "full" else REFRESH_FROM
     windows = build_windows(range_start, today + timedelta(days=1))
@@ -286,7 +314,10 @@ def main():
     header, all_rows, date_idx = None, [], None
     for start, end in windows:
         t0 = time.time()
-        records = run_query(database_id, set_window(base_sql, start, end))
+        if RUN_MODE == "card":
+            records = run_card(start, end)
+        else:
+            records = run_query(database_id, set_window(base_sql, start, end))
         log(f"chunk {start} -> {end}: {len(records)} rows in {time.time() - t0:.0f}s")
         if not records:
             continue
